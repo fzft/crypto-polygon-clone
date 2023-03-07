@@ -1,9 +1,7 @@
 package p2p
 
 import (
-	"bytes"
-	"encoding/binary"
-	"fmt"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -15,16 +13,9 @@ func TestProtocolToBytes(t *testing.T) {
 		Message: []byte("message") ,
 	}
 
-	buf := new(bytes.Buffer)
-	err := binary.Write(buf, binary.LittleEndian, p)
-	if err != nil {
-		fmt.Println("binary.Write failed:", err)
-		return
-	}
-	bytes := buf.Bytes()
-	var bytesName [128]byte
-	copy(bytesName[:], bytes)
+	pp := newProtoMessageProcessor()
+	encodeP := pp.encode(p)
+	bytesP := pp.decode(encodeP)
 
-	t.Log(bytesName)
-
+	assert.Equal(t, bytesP.Proto, p.Proto)
 }
