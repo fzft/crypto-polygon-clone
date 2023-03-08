@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 )
@@ -15,7 +16,7 @@ type LocalTransport struct {
 func NewLocalTransport(addr NetAddr) Transport {
 	return &LocalTransport{
 		addr:      addr,
-		consumeCh: make(chan RPC),
+		consumeCh: make(chan RPC, 1024),
 		peers:     make(map[NetAddr]*LocalTransport),
 	}
 }
@@ -32,19 +33,28 @@ func (t *LocalTransport) Connect(transport Transport) error {
 	return nil
 }
 
-func (t *LocalTransport) SendMessage(addr NetAddr, bytes []byte) error {
-	t.lock.Lock()
-	defer t.lock.Unlock()
+func (t *LocalTransport) SendMessage(to NetAddr, data []byte) error {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
 
-	peer, ok := t.peers[addr]
+	peer, ok := t.peers[to]
 	if !ok {
-		return fmt.Errorf("peer %s not found", addr)
+		return fmt.Errorf("peer %s not found", to)
 	}
 
-	peer.consumeCh <- RPC{From: addr, Payload: bytes}
+	peer.consumeCh <- RPC{From: to, Payload: bytes.NewReader(data)}
 	return nil
 }
 
 func (t *LocalTransport) Addr() NetAddr {
 	return t.addr
+}
+
+func (t *LocalTransport) Broadcast(data []byte) error {
+	for _, peer := range t.peers {
+		if err := t.SendMessage(peer.Addr(), data); err != nil {
+			return err
+		}
+	}
+	return nil
 }

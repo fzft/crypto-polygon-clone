@@ -1,36 +1,51 @@
 package main
 
 import (
-	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/fzft/crypto-simple-blockchain/log"
-	myp2p "github.com/fzft/crypto-simple-blockchain/p2p"
-	"os"
-	"os/signal"
-	"syscall"
+	"bytes"
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/fzft/crypto-simple-blockchain/core"
+	"github.com/fzft/crypto-simple-blockchain/crypto"
+	"github.com/fzft/crypto-simple-blockchain/p2p"
+	"math/rand"
+	"strconv"
 	"time"
 )
 
 func main() {
-	stopCh := make(chan struct{})
-	term := make(chan os.Signal)
 
-	msgHandler := func(msg myp2p.Message, peer *p2p.Peer, ws p2p.MsgReadWriter) {
-		log.Printf("get message %s", msg)
+	trLocal := p2p.NewLocalTransport("LOCAL")
+	trRemote := p2p.NewLocalTransport("REMOTE")
+
+	trLocal.Connect(trRemote)
+	trRemote.Connect(trLocal)
+
+	go func() {
+		for {
+			if err := sendTransaction(trRemote, trLocal.Addr()); err != nil {
+				log.Error(err.Error())
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
+	opts := p2p.ServerOpts{
+		Transports: []p2p.Transport{trLocal},
 	}
 
-	node1  := myp2p.NewNode("node1", ":30300", msgHandler, true)
-	node2  := myp2p.NewNode("node2", ":30301", msgHandler, true)
-	node1.Run()
-	node2.Run()
-	node1.SyncAddPeer(node2.Server().Self())
-	go func() {
-		signal.Notify(term, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-		<-term
-		node1.Stop()
-		node2.Stop()
-		time.Sleep(1 * time.Second)
-		log.Info("start to shut down block chain node")
-		stopCh <- struct{}{}
-	}()
-	<-stopCh
+	s := p2p.NewServer(opts)
+	s.Start()
+
+}
+
+func sendTransaction(tr p2p.Transport, to p2p.NetAddr) error {
+	prvKey := crypto.GeneratePrivateKey()
+	data := []byte(strconv.FormatInt(int64(rand.Intn(1000000000000)), 10))
+	tx := core.NewTransaction(data)
+	tx.Sign(prvKey)
+	buf := &bytes.Buffer{}
+	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
+		return err
+	}
+	msg := p2p.NewMessage(p2p.MessageTypeTx, buf.Bytes())
+	return tr.SendMessage(to, msg.Bytes())
 }

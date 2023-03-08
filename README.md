@@ -10,4 +10,8 @@
  * [P2P Network](#p2p-network)
  * [API](#api)
  * [Web](#web)
- * 
+
+## How to run
+```azure
+$ make run
+```

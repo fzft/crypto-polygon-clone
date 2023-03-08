@@ -2,10 +2,12 @@ package core
 
 import (
 	"fmt"
+	"sync"
 )
 
 
 type Blockchain struct {
+	lock sync.RWMutex
 	store Storage
 	headers []*Header
 	validator Validator
@@ -44,13 +46,15 @@ func (bc *Blockchain) HasBlock(height uint32) bool {
 }
 
 func (bc *Blockchain) Height() uint32 {
+	bc.lock.RLock()
+	defer bc.lock.RUnlock()
 	return uint32(len(bc.headers) - 1)
 }
 
-func (bc *Blockchain) addGenesisBlock(b *Block) {
-}
-
 func (bc *Blockchain) addBlockWithoutValidation(b *Block) error {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+
 	bc.headers = append(bc.headers, b.Header)
 
 	//log.Infof("adding block (%d) with hash (%s)", b.Header.Height, b.Hash(BlockHasher{}))

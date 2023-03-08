@@ -1,6 +1,6 @@
 module github.com/fzft/crypto-simple-blockchain
 
-go 1.20
+go 1.18
 
 require (
 	github.com/ethereum/go-ethereum v1.11.2

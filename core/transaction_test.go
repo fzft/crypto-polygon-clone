@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/stretchr/testify/assert"
 	"testing"
@@ -37,4 +38,15 @@ func randomTxWithSignature(t *testing.T) *Transaction {
 	}
 	assert.Nil(t, tx.Sign(prvKey))
 	return tx
+}
+
+func TestNewGobTxDecoder(t *testing.T) {
+	tx := randomTxWithSignature(t)
+	buf := &bytes.Buffer{}
+	assert.Nil(t, tx.Encode(NewGobTxEncoder(buf)))
+
+	txDecoded := new(Transaction)
+	decoder := NewGobTxDecoder(buf)
+	assert.Nil(t, txDecoded.Decode(decoder))
+	assert.Equal(t, tx, txDecoded)
 }
