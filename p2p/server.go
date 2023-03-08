@@ -27,7 +27,14 @@ const (
 	exchangeComplete
 )
 
+type ServerOpts struct {
+	name string
+	listenAddr string
+	Transports []Transport
+}
+
 type Server struct {
+	ServerOpts
 	uuid [16]byte
 	name       string
 	listenAddr string
@@ -52,19 +59,21 @@ type Server struct {
 
 	symKey []byte
 	stopCh chan struct{}
+
+	rpcCh chan RPC
 }
 
-func NewServer(name, listenAddr string) *Server {
+func NewServer(opts ServerOpts) *Server {
 
 	privateKey := newkey()
 	pubKey, _ := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	uuid := md5.Sum(pubKey)
 
 	return &Server{
-		name:       name,
+		name:       opts.name,
 		uuid: uuid,
 		privateKey: privateKey,
-		listenAddr: listenAddr,
+		listenAddr: opts.listenAddr,
 		publicKey: pubKey,
 		msgRecv:   make(chan Message),
 		msgSend:   make(chan Message),
@@ -77,13 +86,40 @@ func NewServer(name, listenAddr string) *Server {
 		setConn: make(map[[16]byte]chan error),
 		peerPubKey: make(map[[16]byte][294]byte),
 		protoMessageProcessor: newProtoMessageProcessor(),
+		rpcCh: make(chan RPC),
 
 		// hard code
 		symKey: []byte("example key 1234"),
 	}
 }
 
+func (srv *Server) initTransports() {
+	for _, tr := range srv.Transports {
+		go func(tr Transport) {
+			for rpc := range tr.Consume() {
+				srv.rpcCh <- rpc
+			}
+		}(tr)
+	}
+}
+
 func (srv *Server) Start() {
+	srv.initTransports()
+
+LOOP:
+	for {
+		select {
+		case rpc :=<-srv.rpcCh:
+			log.Infof("rpc +v", rpc)
+		case <-srv.stopCh:
+			break LOOP
+		default:
+
+		}
+	}
+
+
+
 	addr, err := net.ResolveUDPAddr("udp", srv.listenAddr)
 	if err != nil {
 		log.Errorf("invalid ip address: %s", srv.listenAddr)
