@@ -5,7 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"github.com/fzft/crypto-polygon-clone/types"
+	"github.com/fzft/crypto-simple-blockchain/types"
 	"math/big"
 )
 

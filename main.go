@@ -2,8 +2,8 @@ package main
 
 import (
 	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/fzft/crypto-polygon-clone/log"
-	myp2p "github.com/fzft/crypto-polygon-clone/p2p"
+	"github.com/fzft/crypto-simple-blockchain/log"
+	myp2p "github.com/fzft/crypto-simple-blockchain/p2p"
 	"os"
 	"os/signal"
 	"syscall"

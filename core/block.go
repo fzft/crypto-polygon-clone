@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	"github.com/fzft/crypto-polygon-clone/crypto"
-	"github.com/fzft/crypto-polygon-clone/types"
+	"github.com/fzft/crypto-simple-blockchain/crypto"
+	"github.com/fzft/crypto-simple-blockchain/types"
 	"io"
 )
 

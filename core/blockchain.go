@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"github.com/fzft/crypto-polygon-clone/log"
 )
 
 
@@ -54,6 +53,6 @@ func (bc *Blockchain) addGenesisBlock(b *Block) {
 func (bc *Blockchain) addBlockWithoutValidation(b *Block) error {
 	bc.headers = append(bc.headers, b.Header)
 
-	log.Infof("adding block (%d) with hash (%s)", b.Header.Height, b.Hash(BlockHasher{}))
+	//log.Infof("adding block (%d) with hash (%s)", b.Header.Height, b.Hash(BlockHasher{}))
 	return bc.store.Put(b)
 }

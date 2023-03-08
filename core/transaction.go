@@ -2,7 +2,7 @@ package core
 
 import (
 	"fmt"
-	"github.com/fzft/crypto-polygon-clone/crypto"
+	"github.com/fzft/crypto-simple-blockchain/crypto"
 )
 
 type Transaction struct {

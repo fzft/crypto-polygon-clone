@@ -1,7 +1,7 @@
 package core
 
 import (
-	"github.com/fzft/crypto-polygon-clone/types"
+	"github.com/fzft/crypto-simple-blockchain/types"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

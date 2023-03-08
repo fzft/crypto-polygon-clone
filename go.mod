@@ -1,4 +1,4 @@
-module github.com/fzft/crypto-polygon-clone
+module github.com/fzft/crypto-simple-blockchain
 
 go 1.20
 
