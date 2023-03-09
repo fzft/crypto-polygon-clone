@@ -2,74 +2,119 @@ package p2p
 
 import (
 	"github.com/fzft/crypto-simple-blockchain/core"
-	"github.com/fzft/crypto-simple-blockchain/log"
 	"github.com/fzft/crypto-simple-blockchain/types"
-	"sort"
+	"sync"
 )
 
 type TxMapSorter struct {
-	transactions []*core.Transaction
+	lock         sync.RWMutex
+	transactions *types.List[*core.Transaction]
+	lookup       map[types.Hash]*core.Transaction
 }
 
-func NewTxMapSorter(txMap map[types.Hash]*core.Transaction) *TxMapSorter {
-	txx := make([]*core.Transaction, len(txMap))
-
-	i := 0
-	for _, tx := range txMap {
-		txx[i] = tx
-		i++
-	}
-	s := &TxMapSorter{transactions: txx}
-	sort.Sort(s)
-	return s
-}
-
-func (s *TxMapSorter) Len() int { return len(s.transactions) }
-func (s *TxMapSorter) Swap(i, j int) {
-	s.transactions[i], s.transactions[j] = s.transactions[j], s.transactions[i]
-}
-
-func (s *TxMapSorter) Less(i, j int) bool {
-	return s.transactions[i].FirstSeen() < s.transactions[j].FirstSeen()
-}
-
-type TxPool struct {
-	transactions map[types.Hash]*core.Transaction
-}
-
-func NewTxPool() *TxPool {
-	return &TxPool{
-		transactions: make(map[types.Hash]*core.Transaction),
+func NewTxMapSorter() *TxMapSorter {
+	return &TxMapSorter{
+		transactions: types.NewList[*core.Transaction](),
+		lookup:       make(map[types.Hash]*core.Transaction),
 	}
 }
 
-func (p *TxPool) Len() int {
-	return len(p.transactions)
+func (s *TxMapSorter) First() *core.Transaction {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	first := s.transactions.Get(0)
+	return s.lookup[first.Hash(core.TxHasher{})]
 }
 
-func (p *TxPool) Flush() {
-	p.transactions = make(map[types.Hash]*core.Transaction)
+func (s *TxMapSorter) Get(h types.Hash) *core.Transaction {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	return s.lookup[h]
 }
 
-// Has return true if the transaction is in the pool.
-func (p *TxPool) Has(hash types.Hash) bool {
-	_, ok := p.transactions[hash]
+func (s *TxMapSorter) Add(tx *core.Transaction) {
+	hash := tx.Hash(core.TxHasher{})
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if _, ok := s.lookup[hash]; !ok {
+		s.lookup[hash] = tx
+		s.transactions.Insert(tx)
+	}
+}
+
+func (s *TxMapSorter) Remove(h types.Hash) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.transactions.Remove(s.lookup[h])
+	delete(s.lookup, h)
+}
+
+func (s *TxMapSorter) Count() int {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	return len(s.lookup)
+}
+
+func (s *TxMapSorter) Contains(h types.Hash) bool {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	_, ok := s.lookup[h]
 	return ok
 }
 
-func (p *TxPool) Get(hash types.Hash) *core.Transaction {
-	return p.transactions[hash]
+func (s *TxMapSorter) Clear() {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.lookup = make(map[types.Hash]*core.Transaction)
+	s.transactions.Clear()
 }
 
-// Add adds a transaction to the pool.
-func (p *TxPool) Add(tx *core.Transaction) error {
-	hash := tx.Hash(core.TxHasher{})
-	p.transactions[hash] = tx
-	log.Infof("Added transaction %s to pool", hash)
-	return nil
+type TxPool struct {
+	all     *TxMapSorter
+	pending *TxMapSorter
+
+	maxLength int
 }
 
-func (p *TxPool) Transactions() []*core.Transaction {
-	s := NewTxMapSorter(p.transactions)
-	return s.transactions
+func NewTxPool(maxLength int) *TxPool {
+	return &TxPool{
+		all:       NewTxMapSorter(),
+		pending:   NewTxMapSorter(),
+		maxLength: maxLength,
+	}
 }
+
+func (p *TxPool) Add(tx *core.Transaction) {
+	if p.all.Count() == p.maxLength {
+		oldest := p.all.First()
+		p.all.Remove(oldest.Hash(core.TxHasher{}))
+	}
+
+	if !p.all.Contains(tx.Hash(core.TxHasher{})) {
+		p.all.Add(tx)
+		p.pending.Add(tx)
+	}
+}
+
+func (p *TxPool) Contains(h types.Hash) bool {
+	return p.all.Contains(h)
+}
+
+func (p *TxPool) Pending() []*core.Transaction {
+	return p.pending.transactions.Data
+}
+
+func (p *TxPool) ClearPending() {
+	p.pending.Clear()
+}
+
+func (p *TxPool) PendingCount() int {
+	return p.pending.Count()
+}
+
+func (p *TxPool) All() []*core.Transaction {
+	return p.all.transactions.Data
+}
+

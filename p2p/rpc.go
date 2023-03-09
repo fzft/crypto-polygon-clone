@@ -5,15 +5,17 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/fzft/crypto-simple-blockchain/core"
-	"github.com/fzft/crypto-simple-blockchain/log"
 	"io"
 )
 
 type MessageType byte
 
 const (
-	MessageTypeTx MessageType = 0x1
-	MessageTypeBock
+	MessageTypeTx        MessageType = 0x1
+	MessageTypeBlock     MessageType = 0x2
+	MessageTypeGetBlocks MessageType = 0x3
+	MessageTypeStatus    MessageType = 0x4
+	MessageTypeGetStatus MessageType = 0x5
 )
 
 type RPC struct {
@@ -52,8 +54,6 @@ func DefaultRPCDecodeFunc(rpc RPC) (*DecodedMessage, error) {
 		return nil, fmt.Errorf("failed to decode message from %s: %v", rpc.From, err)
 	}
 
-	log.Infof("received message from %s: %v", rpc.From, msg)
-
 	switch msg.Header {
 	case MessageTypeTx:
 		tx := new(core.Transaction)
@@ -64,6 +64,34 @@ func DefaultRPCDecodeFunc(rpc RPC) (*DecodedMessage, error) {
 			From: rpc.From,
 			Data: tx,
 		}, nil
+	case MessageTypeBlock:
+		block := new(core.Block)
+		if err := block.Decode(core.NewGobBlockDecoder(bytes.NewReader(msg.Data))); err != nil {
+			return nil, err
+		}
+		return &DecodedMessage{
+			From: rpc.From,
+			Data: block,
+		}, nil
+	case MessageTypeGetStatus:
+		getStatusMessage := new(GetStatusMessage)
+		if err := gob.NewDecoder(bytes.NewReader(msg.Data)).Decode(&GetStatusMessage{}); err != nil {
+			return nil, fmt.Errorf("failed to decode get status message from %s: %v", rpc.From, err)
+		}
+		return &DecodedMessage{
+			From: rpc.From,
+			Data: getStatusMessage,
+		}, nil
+	case MessageTypeStatus:
+		status := new(StatusMessage)
+		if err := gob.NewDecoder(bytes.NewReader(msg.Data)).Decode(status); err != nil {
+			return nil, fmt.Errorf("failed to decode status message from %s: %v", rpc.From, err)
+		}
+		return &DecodedMessage{
+			From: rpc.From,
+			Data: status,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("invalid message type %v", msg.Header)
 	}

@@ -3,38 +3,99 @@ package p2p
 import (
 	"github.com/fzft/crypto-simple-blockchain/core"
 	"github.com/stretchr/testify/assert"
-	"math/rand"
 	"strconv"
 	"testing"
 )
 
-func TestTxPool(t *testing.T) {
-	p := NewTxPool()
-	assert.Equal(t, 0, p.Len())
+func TestMaxLength(t *testing.T) {
+	p := NewTxPool(1)
+	p.Add(&core.Transaction{})
+	assert.Equal(t, 1, p.all.Count())
+
+	p.Add(&core.Transaction{})
+	p.Add(&core.Transaction{})
+	p.Add(&core.Transaction{})
+	p.Add(&core.Transaction{})
+
+	assert.Equal(t, 1, p.all.Count())
+
 }
 
-func TestPoolAddTx(t *testing.T) {
-	p := NewTxPool()
-	tx := core.NewTransaction([]byte("foo"))
-	assert.Nil(t, p.Add(tx))
-	assert.Equal(t, 1, p.Len())
+func TestTxPoolAdd(t *testing.T) {
+	p := NewTxPool(11)
+	n := 10
+	for i := 1; i < n; i++ {
+		tx := &core.Transaction{Data: []byte(strconv.Itoa(i))}
+		p.Add(tx)
+		p.Add(tx)
+
+		assert.Equal(t, i, p.PendingCount())
+		assert.Equal(t, i, p.all.Count())
+	}
+
 }
 
-func TestSortTransactions(t *testing.T) {
-	p := NewTxPool()
-	txLen := 1000
+func TestTxPoolMxLength(t *testing.T) {
+	maxLength := 10
+	p := NewTxPool(maxLength)
+	n := 100
+	txx := []*core.Transaction{}
 
-	for i := 0; i < txLen; i++ {
-		tx := core.NewTransaction([]byte(strconv.FormatInt(int64(i), 10)))
-		tx.SetFirstSeen(int64(i * rand.Intn(10000)))
-		assert.Nil(t, p.Add(tx))
+	for i := 1; i < n; i++ {
+		tx := &core.Transaction{Data: []byte(strconv.Itoa(i))}
+		p.Add(tx)
+		if i > n-(p.maxLength+1) {
+			txx = append(txx, tx)
+		}
 	}
 
-	assert.Equal(t, txLen, p.Len())
+	assert.Equal(t, maxLength, p.all.Count())
+	assert.Equal(t, len(txx), maxLength)
 
-	txx := p.Transactions()
-	for i := 0; i < len(txx) -1 ; i++ {
-		assert.True(t, txx[i].FirstSeen() <= txx[i+1].FirstSeen())
+	for _, tx := range txx {
+		assert.True(t, p.Contains(tx.Hash(core.TxHasher{})))
 	}
 
+}
+
+func TestTxSortedMapFirst(t *testing.T) {
+	m := NewTxMapSorter()
+	tx := &core.Transaction{Data: []byte{1}}
+	m.Add(tx)
+	m.Add(&core.Transaction{Data: []byte{1}})
+	m.Add(&core.Transaction{Data: []byte{1}})
+	m.Add(&core.Transaction{Data: []byte{1}})
+	m.Add(&core.Transaction{Data: []byte{1}})
+
+	assert.Equal(t, tx, m.First())
+
+}
+
+func TestTxSortedMapAdd(t *testing.T) {
+	m := NewTxMapSorter()
+	n := 100
+	for i := 0; i < n; i++ {
+		tx := &core.Transaction{Data: []byte(strconv.Itoa(i))}
+		m.Add(tx)
+		assert.Equal(t, i+1, m.Count())
+		assert.True(t, m.Contains(tx.Hash(core.TxHasher{})))
+		assert.Equal(t, len(m.lookup), m.transactions.Len())
+		assert.Equal(t, tx, m.Get(tx.Hash(core.TxHasher{})))
+	}
+
+	m.Clear()
+	assert.Equal(t, 0, m.Count())
+	assert.Equal(t, 0, len(m.lookup))
+	assert.Equal(t, 0, m.transactions.Len())
+}
+
+func TestTxMapSorterRemove(t *testing.T) {
+	m := NewTxMapSorter()
+
+	tx := &core.Transaction{Data: []byte{1}}
+	m.Add(tx)
+	assert.Equal(t, 1, m.Count())
+	m.Remove(tx.Hash(core.TxHasher{}))
+	assert.Equal(t, 0, m.Count())
+	assert.False(t, m.Contains(tx.Hash(core.TxHasher{})))
 }

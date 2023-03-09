@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/stretchr/testify/assert"
+	"math/rand"
+	"strconv"
 	"testing"
 )
 
@@ -31,17 +33,17 @@ func TestTransactionVerify(t *testing.T) {
 
 }
 
-func randomTxWithSignature(t *testing.T) *Transaction {
+func RandomTxWithSignature(t *testing.T) *Transaction {
 	prvKey := crypto.GeneratePrivateKey()
 	tx := &Transaction{
-		Data: []byte("foo"),
+		Data: []byte(strconv.FormatInt(int64(rand.Intn(10000000000)), 10)),
 	}
 	assert.Nil(t, tx.Sign(prvKey))
 	return tx
 }
 
 func TestNewGobTxDecoder(t *testing.T) {
-	tx := randomTxWithSignature(t)
+	tx := RandomTxWithSignature(t)
 	buf := &bytes.Buffer{}
 	assert.Nil(t, tx.Encode(NewGobTxEncoder(buf)))
 

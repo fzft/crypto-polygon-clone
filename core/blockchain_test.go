@@ -7,7 +7,7 @@ import (
 )
 
 func newBlockchainWithGenesis(t *testing.T) *Blockchain {
-	bc, err := NewBlockchain(randomBlock(t,0, types.Hash{}))
+	bc, err := NewBlockchain(nil, randomBlock( t,0, types.Hash{}))
 	assert.Nil(t, err)
 	return bc
 }
@@ -29,7 +29,7 @@ func TestAddBlock(t *testing.T) {
 	lenBlocks := 1000
 	for i := 0; i < lenBlocks; i++ {
 		prevBlockHash := getPrevBlockHash(t, bc, uint32(i + 1))
-		b := randomBlockWithSignature(t,uint32(i + 1), prevBlockHash)
+		b := randomBlock(t,uint32(i + 1), prevBlockHash)
 		assert.Nil(t, bc.AddBlock(b))
 	}
 
@@ -43,7 +43,7 @@ func TestBlockchainGetHeader(t *testing.T) {
 		lenBlocks := 1000
 		for i := 0; i < lenBlocks; i++ {
 			prevBlockHash := getPrevBlockHash(t, bc, uint32(i + 1))
-			b := randomBlockWithSignature(t,uint32(i + 1), prevBlockHash)
+			b := randomBlock(t,uint32(i + 1), prevBlockHash)
 			assert.Nil(t, bc.AddBlock(b))
 			header, err := bc.GetHeader(uint32(i + 1))
 			assert.Nil(t, err)

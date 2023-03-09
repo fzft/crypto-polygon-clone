@@ -2,10 +2,12 @@ package core
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/gob"
 	"fmt"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/fzft/crypto-simple-blockchain/types"
+	"time"
 )
 
 type Header struct {
@@ -28,22 +30,39 @@ func (h *Header) Bytes() []byte {
 
 type Block struct {
 	*Header
-	Transactions []Transaction
+	Transactions []*Transaction
 	Validator    crypto.PublicKey
 	Signature    *crypto.Signature
 
 	hash types.Hash
 }
 
-func NewBlock(h *Header, txx []Transaction) *Block {
+func NewBlock(h *Header, txx []*Transaction) *Block {
 	return &Block{
 		Header:       h,
 		Transactions: txx,
 	}
 }
 
+func NewBlockFromHeader(h *Header, txx []*Transaction) (*Block, error) {
+	dataHash, err := CalculateDataHash(txx)
+	if err!=nil {
+		return nil, err
+	}
+	header := &Header{
+		Version: 1,
+		DataHash: dataHash,
+		PrevBlockHash: BlockHasher{}.Hash(h),
+		Timestamp: time.Now().UnixNano(),
+		Height: h.Height + 1,
+	}
+
+	return NewBlock(header, txx), nil
+
+}
+
 func (b *Block) AddTransaction(tx *Transaction) {
-	b.Transactions = append(b.Transactions, *tx)
+	b.Transactions = append(b.Transactions, tx)
 }
 
 func (b *Block) Sign(prv crypto.PrivateKey) error {
@@ -71,20 +90,41 @@ func (b *Block) Verify() error {
 			return err
 		}
 	}
+
+	dataHash, err := CalculateDataHash(b.Transactions)
+	if err != nil {
+		return err
+	}
+	if dataHash != b.DataHash {
+		return fmt.Errorf("block (%s) has an invalid data hash", b.Hash(BlockHasher{}))
+	}
+
 	return nil
 }
 
-//func (b *Block) Decode(r io.Reader, dec Decoder[*Block]) error {
-//	return dec.Decode(b)
-//}
-//
-//func (b *Block) Encode(w io.Writer, enc Encoder[*Block]) error {
-//	return enc.Encode(b)
-//}
+func (b *Block) Decode(dec Decoder[*Block]) error {
+	return dec.Decode(b)
+}
+
+func (b *Block) Encode(enc Encoder[*Block]) error {
+	return enc.Encode(b)
+}
 
 func (b *Block) Hash(hasher Hasher[*Header]) types.Hash {
 	if b.hash.IsZero() {
 		b.hash = hasher.Hash(b.Header)
 	}
 	return b.hash
+}
+
+func CalculateDataHash(txx []*Transaction) (hash types.Hash, err error) {
+
+	buf := &bytes.Buffer{}
+	for _, tx := range txx {
+		if err = tx.Encode(NewGobTxEncoder(buf)); err != nil {
+			return
+		}
+	}
+	hash = sha256.Sum256(buf.Bytes())
+	return
 }

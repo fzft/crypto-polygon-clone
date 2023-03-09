@@ -1,5 +1,8 @@
 # A SIMPLE BLOCKCHAIN IMPLEMENTATION IN GOLANG
 
+## Requirements
+Golang 1.18
+
 ## Introduction
 
 ## Structure
@@ -10,8 +13,19 @@
  * [P2P Network](#p2p-network)
  * [API](#api)
  * [Web](#web)
+ * [VM](#vm)
 
-## How to run
+## Installation
+```azure
+$ make build
+```
+
+## Testing
+```azure
+$ make test
+```
+
+## Run 
 ```azure
 $ make run
 ```

@@ -5,11 +5,15 @@ import (
 	"crypto/md5"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/gob"
 	"fmt"
 	"github.com/fzft/crypto-simple-blockchain/core"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
-	"github.com/fzft/crypto-simple-blockchain/log"
+	"github.com/fzft/crypto-simple-blockchain/types"
+	"github.com/go-kit/log"
+	"github.com/sirupsen/logrus"
 	"net"
+	"os"
 	"time"
 )
 
@@ -31,6 +35,8 @@ const (
 )
 
 type ServerOpts struct {
+	ID         string
+	Logger     log.Logger
 	name       string
 	listenAddr string
 
@@ -46,6 +52,7 @@ type Server struct {
 	isValidator bool
 	memPool     *TxPool
 	blockTime   time.Duration
+	chain       *core.Blockchain
 
 	uuid       [16]byte
 	name       string
@@ -66,6 +73,7 @@ type Server struct {
 	peerPubKey            map[[16]byte][294]byte
 	protoMessageProcessor *ProtoMessageProcessor
 	setConn               map[[16]byte]chan error
+	Transport             Transport
 
 	mDns *mDns
 
@@ -75,7 +83,7 @@ type Server struct {
 	rpcCh chan RPC
 }
 
-func NewServer(opts ServerOpts) *Server {
+func NewServer(opts ServerOpts, Transport Transport) (*Server, error) {
 	if opts.BlockTime == 0 {
 		opts.BlockTime = DefaultBlockTime
 	}
@@ -84,14 +92,26 @@ func NewServer(opts ServerOpts) *Server {
 		opts.RPCDecodeFunc = DefaultRPCDecodeFunc
 	}
 
+	if opts.Logger == nil {
+		opts.Logger = log.NewLogfmtLogger(os.Stderr)
+		opts.Logger = log.With(opts.Logger, "ID", opts.ID)
+	}
+
 	privateKey := newkey()
 	pubKey, _ := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	uuid := md5.Sum(pubKey)
+
+	chain, err := core.NewBlockchain(opts.Logger, genesisBlock())
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Server{
 		ServerOpts:            opts,
+		chain:                 chain,
 		isValidator:           opts.PrivateKey != nil,
 		blockTime:             opts.BlockTime,
-		memPool:               NewTxPool(),
+		memPool:               NewTxPool(1000),
 		name:                  opts.name,
 		uuid:                  uuid,
 		privateKey:            privateKey,
@@ -120,7 +140,17 @@ func NewServer(opts ServerOpts) *Server {
 
 	s.ServerOpts = opts
 
-	return s
+	if s.isValidator {
+		go s.validatorLoop()
+	}
+
+	for _, tr := range s.Transports {
+		if err = s.sendGetStatusMessage(tr); err != nil {
+			s.Logger.Log("send get status message", err)
+		}
+	}
+
+	return s, nil
 }
 
 func (srv *Server) initTransports() {
@@ -135,7 +165,6 @@ func (srv *Server) initTransports() {
 
 func (srv *Server) Start() {
 	srv.initTransports()
-	ticker := time.NewTicker(srv.blockTime)
 
 LOOP:
 	for {
@@ -143,20 +172,17 @@ LOOP:
 		case rpc := <-srv.rpcCh:
 			msg, err := srv.RPCDecodeFunc(rpc)
 			if err != nil {
-				log.Errorf("failed to decode rpc: %v", err)
+				logrus.Error(err)
 				continue
 			}
 
 			if err = srv.RPCProcessor.ProcessMessage(msg); err != nil {
-				log.Error(err)
+				logrus.Error(err)
+				continue
 			}
 
 		case <-srv.stopCh:
 			break LOOP
-		case <-ticker.C:
-			if srv.isValidator {
-				srv.createNewBlock()
-			}
 		}
 	}
 
@@ -210,10 +236,27 @@ LOOP:
 	//}()
 }
 
+func (srv *Server) validatorLoop() {
+	ticker := time.NewTicker(srv.blockTime)
+	for {
+		<-ticker.C
+		err := srv.createNewBlock()
+		if err != nil {
+			logrus.Error(err)
+		}
+	}
+}
+
 func (srv *Server) ProcessMessage(msg *DecodedMessage) error {
 	switch t := msg.Data.(type) {
 	case *core.Transaction:
-		return srv.ProcessTransaction(t)
+		return srv.processTransaction(t)
+	case *core.Block:
+		return srv.processBlock(t)
+	case *GetStatusMessage:
+		return srv.processGetStatusMessage(msg.From, t)
+	case *StatusMessage:
+		return srv.processStatusMessage(msg.From, t)
 	default:
 		return fmt.Errorf("invalid message type: %s", t)
 	}
@@ -228,9 +271,9 @@ func (srv *Server) broadcast(msg []byte) error {
 	return nil
 }
 
-func (srv *Server) ProcessTransaction(tx *core.Transaction) error {
+func (srv *Server) processTransaction(tx *core.Transaction) error {
 	hash := tx.Hash(core.TxHasher{})
-	if srv.memPool.Has(hash) {
+	if srv.memPool.Contains(hash) {
 		return fmt.Errorf("transaction already exists in mempool: %s", hash)
 	}
 	if err := tx.Verify(); err != nil {
@@ -241,7 +284,19 @@ func (srv *Server) ProcessTransaction(tx *core.Transaction) error {
 
 	go srv.broadcastTx(tx)
 
-	return srv.memPool.Add(tx)
+	srv.memPool.Add(tx)
+
+	return nil
+}
+
+func (srv *Server) broadcastBlock(b *core.Block) error {
+	buf := &bytes.Buffer{}
+	if err := b.Encode(core.NewGobBlockEncoder(buf)); err != nil {
+		return err
+	}
+
+	msg := NewMessage(MessageTypeBlock, buf.Bytes())
+	return srv.broadcast(msg.Bytes())
 }
 
 func (srv *Server) broadcastTx(tx *core.Transaction) error {
@@ -254,8 +309,41 @@ func (srv *Server) broadcastTx(tx *core.Transaction) error {
 }
 
 func (srv *Server) createNewBlock() error {
-	log.Info("create new block")
+	currentHeader, err := srv.chain.GetHeader(srv.chain.Height())
+	if err != nil {
+		return err
+	}
+
+	txx := srv.memPool.Pending()
+
+	block, err := core.NewBlockFromHeader(currentHeader, txx)
+	if err != nil {
+		return err
+	}
+
+	err = block.Sign(*srv.PrivateKey)
+	if err != nil {
+		return err
+	}
+
+	if err = srv.chain.AddBlock(block); err != nil {
+		return err
+	}
+
+	srv.memPool.ClearPending()
+
+	go srv.broadcastBlock(block)
 	return nil
+}
+
+func genesisBlock() *core.Block {
+	header := &core.Header{
+		Version:   1,
+		DataHash:  types.Hash{},
+		Timestamp: 000000,
+		Height:    0,
+	}
+	return &core.Block{Header: header}
 }
 
 //func (srv *Server) handleMessage() {
@@ -445,4 +533,43 @@ func (srv *Server) Self() *Peer {
 		ListenAddr: srv.realAddr,
 		UUID:       srv.uuid,
 	}
+}
+
+func (srv *Server) processBlock(b *core.Block) error {
+	if err := srv.chain.AddBlock(b); err != nil {
+		return err
+	}
+	go srv.broadcastBlock(b)
+	return nil
+}
+
+func (srv *Server) sendGetStatusMessage(tr Transport) error {
+	getStatusMsg := new(GetStatusMessage)
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(getStatusMsg); err != nil {
+		return err
+	}
+	msg := NewMessage(MessageTypeGetStatus, buf.Bytes())
+	if err := tr.SendMessage(tr.Addr(), msg.Bytes()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (srv *Server) processGetStatusMessage(from NetAddr, t *GetStatusMessage) error {
+	statusMessage := &StatusMessage{
+		CurrentHeight: srv.chain.Height(),
+		ID:            srv.ID,
+	}
+
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(statusMessage); err != nil {
+		return err
+	}
+	msg := NewMessage(MessageTypeStatus, buf.Bytes())
+	return srv.Transport.SendMessage(from, msg.Bytes())
+}
+
+func (srv *Server) processStatusMessage(from NetAddr, t *StatusMessage) error {
+	return nil
 }
