@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"github.com/fzft/crypto-simple-blockchain/types"
 	"math/big"
 )
@@ -25,7 +26,7 @@ func GeneratePrivateKey() PrivateKey {
 
 func (k PrivateKey) Sign(data []byte) (*Signature, error) {
 	r, s, err := ecdsa.Sign(rand.Reader, k.key, data)
-	if err !=nil {
+	if err != nil {
 		panic(err)
 	}
 
@@ -33,15 +34,13 @@ func (k PrivateKey) Sign(data []byte) (*Signature, error) {
 }
 
 func (k PrivateKey) PublicKey() PublicKey {
-	return PublicKey{Key: &k.key.PublicKey}
+	return elliptic.MarshalCompressed(k.key.Curve, k.key.X, k.key.Y)
 }
 
-type PublicKey struct {
-	Key *ecdsa.PublicKey
-}
+type PublicKey []byte
 
 func (k PublicKey) ToSlice() []byte {
-	return elliptic.Marshal(k.Key.Curve, k.Key.X, k.Key.Y)
+	return k
 }
 
 func (k PublicKey) Address() types.Address {
@@ -49,11 +48,21 @@ func (k PublicKey) Address() types.Address {
 	return types.NewAddressFromBytes(h[len(h)-20:])
 }
 
-
 type Signature struct {
 	R, S *big.Int
 }
 
+func (sig Signature) String() string {
+	b := append(sig.S.Bytes(), sig.R.Bytes()...)
+	return hex.EncodeToString(b)
+}
+
 func (sig Signature) Verify(pubKey PublicKey, data []byte) bool {
-	return ecdsa.Verify(pubKey.Key, data, sig.R, sig.S)
+	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), pubKey)
+	key := &ecdsa.PublicKey{
+		Curve: elliptic.P256(),
+		X:     x,
+		Y:     y,
+	}
+	return ecdsa.Verify(key, data, sig.R, sig.S)
 }

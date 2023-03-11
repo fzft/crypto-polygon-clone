@@ -16,7 +16,6 @@ func TestGeneratePrivateKey(t *testing.T) {
 func TestKeypairSignVerify(t *testing.T) {
 	prvKey := GeneratePrivateKey()
 	pubKey := prvKey.PublicKey()
-	//address := pubKey.Address()
 
 	msg := []byte("hello world")
 	sig, err := prvKey.Sign(msg)

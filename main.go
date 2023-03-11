@@ -2,66 +2,58 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/fzft/crypto-simple-blockchain/core"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/fzft/crypto-simple-blockchain/p2p"
+	"net"
 	"time"
 )
 
 func main() {
 
-	trLocal := p2p.NewLocalTransport("LOCAL")
-	trRemoteA := p2p.NewLocalTransport("REMOTE_A")
-	trRemoteB := p2p.NewLocalTransport("REMOTE_B")
-	trRemoteC := p2p.NewLocalTransport("REMOTE_C")
+	pk := crypto.GeneratePrivateKey()
+	localNode := makeServer("LOCAL_NODE", ":3000", &pk, []string{":3001"}, ":9090")
+	go localNode.Start()
 
-	trLocal.Connect(trRemoteA)
-	trRemoteA.Connect(trRemoteB)
-	trRemoteB.Connect(trRemoteC)
+	remoteNode := makeServer("REMOTE_NODE", ":3001", nil, []string{":3002"}, "")
+	go remoteNode.Start()
 
-	trRemoteA.Connect(trLocal)
-	initRemoteServers([]p2p.Transport{trRemoteA, trRemoteB, trRemoteC})
+	remoteNodeB := makeServer("REMOTE_NODE_B", ":3002", nil, []string{}, "")
+	go remoteNodeB.Start()
 
 	go func() {
-		for {
-			if err := sendTransaction(trRemoteA, trLocal.Addr()); err != nil {
-				log.Error(err.Error())
-			}
-			time.Sleep(2 * time.Second)
-		}
+		time.Sleep(7 * time.Second)
+		lateNode := makeServer("LATE_NODE", ":3003", nil, []string{":3001"}, "")
+		go lateNode.Start()
 	}()
 
-	//go func() {
-	//	time.Sleep(7 * time.Second)
-	//
-	//	trLate := p2p.NewLocalTransport("LATE_REMOTE")
-	//	trRemoteC.Connect(trLate)
-	//	lateServer := makeServer("LATE_REMOTE", trLate, nil)
-	//	go lateServer.Start()
-	//}()
-
-	privateKey := crypto.GeneratePrivateKey()
-
-	localServer := makeServer("LOCAL", trLocal, &privateKey)
-	localServer.Start()
-
+	//go tcpTester()
+	select {}
 }
 
-func initRemoteServers(trs []p2p.Transport) {
-	for i := 0; i < len(trs); i++ {
-		id := fmt.Sprintf("REMOTE_%d", i)
-		s := makeServer(id, trs[i], nil)
-		go s.Start()
+func tcpTester() {
+	conn, err := net.Dial("tcp", ":3000")
+	if err != nil {
+		log.Error(err.Error())
+		return
 	}
+
+	tx, _ := sendTransaction()
+	_, err = conn.Write(tx)
+	if err != nil {
+		log.Error(err.Error())
+	}
+
 }
 
-func makeServer(id string, tr p2p.Transport, pk *crypto.PrivateKey) *p2p.Server {
+func makeServer(id string, listenAddr string, pk *crypto.PrivateKey, seedNodes []string, apiListenAddr string) *p2p.Server {
 	opts := p2p.ServerOpts{
-		PrivateKey: pk,
-		ID:         id,
-		Transports: []p2p.Transport{tr},
+		PrivateKey:    pk,
+		ListenAddr:    listenAddr,
+		SeedNodes:     seedNodes,
+		ID:            id,
+		APIListenAddr: apiListenAddr,
 	}
 
 	s, err := p2p.NewServer(opts)
@@ -72,17 +64,17 @@ func makeServer(id string, tr p2p.Transport, pk *crypto.PrivateKey) *p2p.Server 
 	return s
 }
 
-func sendTransaction(tr p2p.Transport, to p2p.NetAddr) error {
+func sendTransaction() ([]byte, error) {
 	prvKey := crypto.GeneratePrivateKey()
 	data := contract()
 	tx := core.NewTransaction(data)
 	tx.Sign(prvKey)
 	buf := &bytes.Buffer{}
 	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
-		return err
+		return nil, err
 	}
 	msg := p2p.NewMessage(p2p.MessageTypeTx, buf.Bytes())
-	return tr.SendMessage(to, msg.Bytes())
+	return msg.Bytes(), nil
 }
 
 func contract() []byte {

@@ -2,10 +2,12 @@ package p2p
 
 import (
 	"bytes"
+	"crypto/elliptic"
 	"encoding/gob"
 	"fmt"
 	"github.com/fzft/crypto-simple-blockchain/core"
 	"io"
+	"net"
 )
 
 type MessageType byte
@@ -16,10 +18,11 @@ const (
 	MessageTypeGetBlocks MessageType = 0x3
 	MessageTypeStatus    MessageType = 0x4
 	MessageTypeGetStatus MessageType = 0x5
+	MessageTypeBlocks    MessageType = 0x6
 )
 
 type RPC struct {
-	From    NetAddr
+	From    net.Addr
 	Payload io.Reader
 }
 
@@ -42,7 +45,7 @@ func (msg *Message) Bytes() []byte {
 }
 
 type DecodedMessage struct {
-	From NetAddr
+	From net.Addr
 	Data any
 }
 
@@ -74,13 +77,9 @@ func DefaultRPCDecodeFunc(rpc RPC) (*DecodedMessage, error) {
 			Data: block,
 		}, nil
 	case MessageTypeGetStatus:
-		getStatusMessage := new(GetStatusMessage)
-		if err := gob.NewDecoder(bytes.NewReader(msg.Data)).Decode(&GetStatusMessage{}); err != nil {
-			return nil, fmt.Errorf("failed to decode get status message from %s: %v", rpc.From, err)
-		}
 		return &DecodedMessage{
 			From: rpc.From,
-			Data: getStatusMessage,
+			Data: &GetStatusMessage{},
 		}, nil
 	case MessageTypeStatus:
 		status := new(StatusMessage)
@@ -90,6 +89,24 @@ func DefaultRPCDecodeFunc(rpc RPC) (*DecodedMessage, error) {
 		return &DecodedMessage{
 			From: rpc.From,
 			Data: status,
+		}, nil
+	case MessageTypeGetBlocks:
+		getBlocksMessage := new(GetBlocksMessage)
+		if err := gob.NewDecoder(bytes.NewReader(msg.Data)).Decode(getBlocksMessage); err != nil {
+			return nil, fmt.Errorf("failed to decode get blocks message from %s: %v", rpc.From, err)
+		}
+		return &DecodedMessage{
+			From: rpc.From,
+			Data: getBlocksMessage,
+		}, nil
+	case MessageTypeBlocks:
+		blocks := new(BlocksMessage)
+		if err := gob.NewDecoder(bytes.NewReader(msg.Data)).Decode(blocks); err != nil {
+			return nil, fmt.Errorf("failed to decode blocks message from %s: %v", rpc.From, err)
+		}
+		return &DecodedMessage{
+			From: rpc.From,
+			Data: blocks,
 		}, nil
 
 	default:
@@ -111,4 +128,8 @@ func NewDefaultRPCHandler(p RPCProcessor) *DefaultRPCHandler {
 
 type RPCProcessor interface {
 	ProcessMessage(message *DecodedMessage) error
+}
+
+func init() {
+	gob.Register(elliptic.P256())
 }

@@ -2,11 +2,9 @@ package p2p
 
 import (
 	"bytes"
-	"crypto/md5"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/gob"
 	"fmt"
+	"github.com/fzft/crypto-simple-blockchain/api"
 	"github.com/fzft/crypto-simple-blockchain/core"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/fzft/crypto-simple-blockchain/types"
@@ -14,31 +12,18 @@ import (
 	"github.com/sirupsen/logrus"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
-//type Message struct {
-//	msg ProtoMessage
-//	conn *net.UDPConn
-//	addr *net.UDPAddr
-//}
-
 const DefaultBlockTime = 5 * time.Second
 
-type HandshakeStep int
-
-const (
-	preExchange HandshakeStep = iota
-	exchangePubKey
-	exchangeSymKey
-	exchangeComplete
-)
-
 type ServerOpts struct {
-	ID         string
-	Logger     log.Logger
-	name       string
-	listenAddr string
+	APIListenAddr string
+	SeedNodes     []string
+	ListenAddr    string
+	ID            string
+	Logger        log.Logger
 
 	Transports    []Transport
 	PrivateKey    *crypto.PrivateKey
@@ -49,41 +34,24 @@ type ServerOpts struct {
 
 type Server struct {
 	ServerOpts
+	TCPTransport *TCPTransport
+	peerCh       chan *TCPPeer
+
+	mu      sync.RWMutex
+	peerMap map[net.Addr]*TCPPeer
+
 	isValidator bool
 	memPool     *TxPool
 	blockTime   time.Duration
 	chain       *core.Blockchain
 
-	uuid       [16]byte
-	name       string
-	listenAddr string
-	realAddr   string
-	privateKey *rsa.PrivateKey
-	publicKey  []byte
-	conn       *net.UDPConn
-	hmac       string
-
-	peers                 map[[16]byte]*Peer
-	msgRecv               chan Message
-	msgSend               chan Message
-	msgPreConSend         chan Message
-	conns                 map[[16]byte]net.Conn
-	handshakeOk           map[[16]byte]HandshakeStep
-	peerSymkeys           map[[16]byte][]byte
-	peerPubKey            map[[16]byte][294]byte
-	protoMessageProcessor *ProtoMessageProcessor
-	setConn               map[[16]byte]chan error
-	Transport             Transport
-
-	mDns *mDns
-
-	symKey []byte
 	stopCh chan struct{}
+	txChan chan *core.Transaction
 
 	rpcCh chan RPC
 }
 
-func NewServer(opts ServerOpts, Transport Transport) (*Server, error) {
+func NewServer(opts ServerOpts) (*Server, error) {
 	if opts.BlockTime == 0 {
 		opts.BlockTime = DefaultBlockTime
 	}
@@ -97,41 +65,40 @@ func NewServer(opts ServerOpts, Transport Transport) (*Server, error) {
 		opts.Logger = log.With(opts.Logger, "ID", opts.ID)
 	}
 
-	privateKey := newkey()
-	pubKey, _ := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	uuid := md5.Sum(pubKey)
-
 	chain, err := core.NewBlockchain(opts.Logger, genesisBlock())
 	if err != nil {
 		return nil, err
 	}
 
-	s := &Server{
-		ServerOpts:            opts,
-		chain:                 chain,
-		isValidator:           opts.PrivateKey != nil,
-		blockTime:             opts.BlockTime,
-		memPool:               NewTxPool(1000),
-		name:                  opts.name,
-		uuid:                  uuid,
-		privateKey:            privateKey,
-		listenAddr:            opts.listenAddr,
-		publicKey:             pubKey,
-		msgRecv:               make(chan Message),
-		msgSend:               make(chan Message),
-		msgPreConSend:         make(chan Message),
-		stopCh:                make(chan struct{}),
-		peers:                 make(map[[16]byte]*Peer),
-		conns:                 make(map[[16]byte]net.Conn),
-		handshakeOk:           make(map[[16]byte]HandshakeStep),
-		peerSymkeys:           make(map[[16]byte][]byte),
-		setConn:               make(map[[16]byte]chan error),
-		peerPubKey:            make(map[[16]byte][294]byte),
-		protoMessageProcessor: newProtoMessageProcessor(),
-		rpcCh:                 make(chan RPC),
+	txChan := make(chan *core.Transaction, 10)
 
-		// hard code
-		symKey: []byte("example key 1234"),
+	if len(opts.APIListenAddr) > 0 {
+		apiServerCfg := api.ServerConfig{
+			Logger:     opts.Logger,
+			ListenAddr: opts.APIListenAddr,
+		}
+
+		apiServer := api.NewServer(apiServerCfg, chain, txChan)
+		go apiServer.Start()
+
+		opts.Logger.Log("msg", "accepting API connection on", "addr", opts.APIListenAddr, "id", opts.ID)
+	}
+
+	peerCh := make(chan *TCPPeer, 10)
+	tr := NewTCPTransport(opts.ListenAddr, peerCh)
+
+	s := &Server{
+		TCPTransport: tr,
+		peerCh:       peerCh,
+		peerMap:      make(map[net.Addr]*TCPPeer),
+		ServerOpts:   opts,
+		chain:        chain,
+		isValidator:  opts.PrivateKey != nil,
+		blockTime:    opts.BlockTime,
+		memPool:      NewTxPool(1000),
+		stopCh:       make(chan struct{}),
+		rpcCh:        make(chan RPC, 10),
+		txChan:       txChan,
 	}
 
 	if opts.RPCProcessor == nil {
@@ -144,40 +111,43 @@ func NewServer(opts ServerOpts, Transport Transport) (*Server, error) {
 		go s.validatorLoop()
 	}
 
-	for _, tr := range s.Transports {
-		if err = s.sendGetStatusMessage(tr); err != nil {
-			s.Logger.Log("send get status message", err)
-		}
-	}
-
 	return s, nil
 }
 
-func (srv *Server) initTransports() {
-	for _, tr := range srv.Transports {
-		go func(tr Transport) {
-			for rpc := range tr.Consume() {
-				srv.rpcCh <- rpc
-			}
-		}(tr)
-	}
-}
-
 func (srv *Server) Start() {
-	srv.initTransports()
-
+	srv.TCPTransport.Start()
+	time.Sleep(time.Second * 1)
+	srv.bootstrapNetwork()
+	srv.Logger.Log("msg", "accepting TCP connection on", "addr", srv.ListenAddr, "id", srv.ID)
 LOOP:
 	for {
 		select {
+		case peer := <-srv.peerCh:
+			srv.peerMap[peer.conn.RemoteAddr()] = peer
+			go peer.readLoop(srv.rpcCh)
+			if err := srv.sendGetStatusMessage(peer); err != nil {
+				srv.Logger.Log("msg", "could not send get status message", "err", err)
+				continue
+			}
+			srv.Logger.Log("msg", "peer added to the server", "outgoing", peer.Outgoing, "addr", peer.conn.RemoteAddr())
+		case tx := <-srv.txChan:
+			if err := srv.processTransaction(tx); err != nil {
+				srv.Logger.Log("msg", "could not process transaction", "err", err)
+				continue
+			}
 		case rpc := <-srv.rpcCh:
+
 			msg, err := srv.RPCDecodeFunc(rpc)
 			if err != nil {
-				logrus.Error(err)
+				srv.Logger.Log("msg", "could not decode message", "err", err)
 				continue
 			}
 
 			if err = srv.RPCProcessor.ProcessMessage(msg); err != nil {
-				logrus.Error(err)
+				if err != core.ErrBlockKnown {
+					logrus.Error(err)
+
+				}
 				continue
 			}
 
@@ -186,57 +156,45 @@ LOOP:
 		}
 	}
 
-	//addr, err := net.ResolveUDPAddr("udp", srv.listenAddr)
-	//if err != nil {
-	//	log.Errorf("invalid ip address: %s", srv.listenAddr)
-	//	return
-	//}
-	//
-	//srv.conn, err = net.ListenUDP("udp", addr)
-	//if err != nil {
-	//	log.Errorf("failed to listen on %s: %v", srv.listenAddr, err)
-	//	return
-	//}
-	//
-	//realAddr := srv.conn.LocalAddr().(*net.UDPAddr)
-	//srv.realAddr = realAddr.String()
-	//srv.mDns = newMDns(srv.realAddr)
-	//log.Infof("UDP listener up %s\n", realAddr)
-	//go srv.handleMessage()
-	//
-	//go func() {
-	//	for {
-	//		select {
-	//		case <-srv.stopCh:
-	//			log.Info("server stopped")
-	//			return
-	//		default:
-	//			buf := make([]byte, 1024)
-	//			n, addr, err := srv.conn.ReadFromUDP(buf)
-	//			log.Infof("srv %s recv msg : %d", srv.listenAddr, n)
-	//
-	//			if err != nil {
-	//				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-	//					continue
-	//				}
-	//				if opErr, ok := err.(*net.OpError); ok && opErr.Err != nil && errors.Is(opErr.Err, net.ErrClosed) {
-	//					return
-	//				}
-	//				log.Fatal("Error reading:", err)
-	//				continue
-	//			}
-	//			if !srv.doHandshake(buf[:n], addr) {
-	//				continue
-	//			}
-	//
-	//			// msgRecv only handle sendMsg event
-	//			srv.msgRecv <- Message{srv.protoMessageProcessor.decode(buf[:n]), srv.conn, addr}
-	//		}
-	//	}
-	//}()
+	srv.Logger.Log("msg", "Server is shutting down")
+}
+
+func (srv *Server) bootstrapNetwork() {
+	for _, addr := range srv.SeedNodes {
+		go func(add string) {
+			tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+			if err != nil {
+				srv.Logger.Log("msg", "could not resolve seed node", "err", err)
+			}
+
+			conn, err := net.DialTCP("tcp", nil, tcpAddr)
+			if err != nil {
+				srv.Logger.Log("msg", "could not connect to seed node", "err", err)
+				return
+			}
+
+			if err = conn.SetReadBuffer(4096); err != nil {
+				srv.Logger.Log("msg", "could not set read buffer", "err", err)
+				return
+			}
+
+			if err = conn.SetWriteBuffer(4096); err != nil {
+				srv.Logger.Log("msg", "could not set write buffer", "err", err)
+				return
+			}
+
+			srv.peerCh <- &TCPPeer{
+				conn: conn,
+			}
+
+			return
+		}(addr)
+
+	}
 }
 
 func (srv *Server) validatorLoop() {
+	srv.Logger.Log("msg", "validator loop started", "blockTime", srv.blockTime)
 	ticker := time.NewTicker(srv.blockTime)
 	for {
 		<-ticker.C
@@ -244,6 +202,7 @@ func (srv *Server) validatorLoop() {
 		if err != nil {
 			logrus.Error(err)
 		}
+
 	}
 }
 
@@ -252,19 +211,27 @@ func (srv *Server) ProcessMessage(msg *DecodedMessage) error {
 	case *core.Transaction:
 		return srv.processTransaction(t)
 	case *core.Block:
-		return srv.processBlock(t)
+		return srv.processBlock(msg.From, t)
 	case *GetStatusMessage:
-		return srv.processGetStatusMessage(msg.From, t)
+		return srv.processGetStatusMessage(msg.From)
 	case *StatusMessage:
 		return srv.processStatusMessage(msg.From, t)
+	case *GetBlocksMessage:
+		return srv.processGetBlocksMessage(msg.From, t)
+	case *BlocksMessage:
+		return srv.processBlocksMessage(msg.From, t)
 	default:
 		return fmt.Errorf("invalid message type: %s", t)
 	}
 }
 
 func (srv *Server) broadcast(msg []byte) error {
-	for _, t := range srv.Transports {
-		if err := t.Broadcast(msg); err != nil {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+
+	for addr, peer := range srv.peerMap {
+		if err := peer.SendMessage(msg); err != nil {
+			fmt.Printf("could not send message to peer[%s] =>: %+v\n", addr.String(), err)
 			return err
 		}
 	}
@@ -343,220 +310,43 @@ func genesisBlock() *core.Block {
 		Timestamp: 000000,
 		Height:    0,
 	}
-	return &core.Block{Header: header}
-}
 
-//func (srv *Server) handleMessage() {
-//	for {
-//		select {
-//		case message := <-srv.msgRecv:
-//			symKey := srv.peerSymkeys[message.msg.Uuid]
-//			deMsg := srv.protoMessageProcessor.decryptMessage(symKey, message.msg)
-//			log.Infof("received %s", string(deMsg))
-//		case message := <-srv.msgSend:
-//			log.Infof("srv %s send msg", srv.name)
-//			_, err := message.conn.Write(srv.protoMessageProcessor.encode(message.msg))
-//			if err != nil {
-//				log.Fatalf("failed to write: %v", err)
-//			}
-//		case message := <-srv.msgPreConSend:
-//			log.Infof("srv %s send pre conn msg to %s", srv.name, message.addr.String())
-//			_, err := message.conn.WriteToUDP(srv.protoMessageProcessor.encode(message.msg), message.addr)
-//			if err != nil {
-//				log.Fatalf("failed to write: %v", err)
-//			}
-//		case <-srv.stopCh:
-//			log.Info("stop handle message")
-//			return
-//		}
-//	}
-//}
+	b := &core.Block{Header: header}
 
-//func (srv *Server) doHandshake(rawMsg []byte, addr *net.UDPAddr) bool {
-//
-//	protoMsg := srv.protoMessageProcessor.decode(rawMsg)
-//	eventType := PeerEventType(protoMsg.Event[0])
-//	remoteUUID := protoMsg.Uuid
-//	ipv4 := string(protoMsg.Ipv4)
-//
-//
-//
-//	if PeerEventTypeError ==  eventType{
-//		// invalid message format
-//		return false
-//	}
-//
-//	// check handshake is ok?
-//	step, ok := srv.handshakeOk[remoteUUID]
-//
-//	log.Infof("recv handshake msg on %s : %d, and current step %d", srv.name, eventType, step )
-//
-//	if !ok {
-//		step = preExchange
-//		srv.handshakeOk[remoteUUID] = step
-//	}
-//
-//	if _, ok = srv.setConn[remoteUUID]; !ok {
-//		srv.setConn[remoteUUID] = make(chan error)
-//	}
-//
-//	var remoteCon net.Conn
-//	var err error
-//	if remoteCon, ok = srv.conns[remoteUUID]; !ok {
-//		remoteCon, err = net.Dial("udp", ipv4)
-//		if err!=nil {
-//			err = fmt.Errorf("failed to dial %s", ipv4)
-//			srv.setConn[remoteUUID] <- err
-//			return false
-//		}
-//		srv.conns[remoteUUID] = remoteCon
-//	}
-//
-//	// exchange public key
-//	if step == preExchange && eventType == PeerEventTypeBeforeAddPubKey{
-//		// validate the pub key
-//
-//		if len(protoMsg.Message) != 294 {
-//			err = fmt.Errorf("invalid public key")
-//			srv.setConn[remoteUUID] <- err
-//			return false
-//		}
-//		var publicKey [294]byte
-//		copy(publicKey[:], protoMsg.Message)
-//		srv.peerPubKey[remoteUUID] = publicKey
-//		srv.handshakeOk[remoteUUID] = exchangePubKey
-//		srv.msgSend <- Message{ srv.protoMessageProcessor.encryptAfterAddPubKey(srv.publicKey, srv.uuid, []byte(srv.realAddr)) , remoteCon.(*net.UDPConn), addr}
-//		return false
-//	}
-//
-//	if step == exchangePubKey && eventType == PeerEventTypeAfterAddPubKey {
-//		// validate the pub key
-//		if len(protoMsg.Message) != 294 {
-//			err = fmt.Errorf("invalid public key")
-//			srv.setConn[remoteUUID] <- err
-//			return false
-//		}
-//		var publicKey [294]byte
-//		copy(publicKey[:], protoMsg.Message)
-//		srv.peerPubKey[remoteUUID] = publicKey
-//		srv.handshakeOk[remoteUUID] = exchangeSymKey
-//		srv.msgSend <- Message{ srv.protoMessageProcessor.encryptBeforeAddSymKey(publicKey[:], srv.symKey, srv.uuid, []byte(srv.realAddr)) , remoteCon.(*net.UDPConn), addr}
-//		return false
-//	}
-//
-//	if step == exchangePubKey && eventType == PeerEventTypeBeforeAddSymKey {
-//		publicKey := srv.peerPubKey[remoteUUID]
-//		peerSymKey := rsaDecrypt(protoMsg.Message, srv.privateKey)
-//		srv.peerSymkeys[remoteUUID] = peerSymKey
-//		srv.handshakeOk[remoteUUID] = exchangeComplete
-//		srv.msgSend <- Message{ srv.protoMessageProcessor.encryptAfterAddSymKey(publicKey[:], srv.symKey, srv.uuid, []byte(srv.realAddr)) , remoteCon.(*net.UDPConn), addr}
-//		return false
-//	}
-//
-//	if step == exchangeSymKey && eventType == PeerEventTypeAfterAddSymKey {
-//		peerSymKey := rsaDecrypt(protoMsg.Message, srv.privateKey)
-//		srv.peerSymkeys[remoteUUID] = peerSymKey
-//		srv.handshakeOk[remoteUUID] = exchangeComplete
-//		srv.setConn[remoteUUID] <- nil
-//		return false
-//	}
-//
-//	if step == exchangeComplete && eventType == PeerEventTypeSendMsg {
-//		return true
-//	}
-//
-//	return false
-//
-//}
-
-//func (srv *Server) AddPeer(peer *Peer) error {
-//	conn, err := net.Dial("udp", peer.ListenAddr)
-//	if err != nil {
-//		log.Fatalf("failed to dial: %v", err)
-//		return err
-//	}
-//
-//	srv.conns[peer.UUID] = conn
-//	srv.handshakeOk[peer.UUID] = exchangePubKey
-//	srv.msgSend <- Message{srv.protoMessageProcessor.encryptBeforeAddPubKey(srv.publicKey, srv.uuid, []byte(srv.realAddr)), conn.(*net.UDPConn), nil}
-//
-//	if _, ok := srv.setConn[peer.UUID]; !ok {
-//		srv.setConn[peer.UUID] = make(chan error)
-//	}
-//
-//	select {
-//		case err = <-srv.setConn[peer.UUID]:
-//			if err!=nil {
-//				log.Fatalf("failed to setup conn: %v", err)
-//				return err
-//			} else {
-//				log.Printf("setup conn success to %s", peer.Name)
-//			}
-//		case <-time.After(time.Second *5):
-//			log.Fatal("failed to add peer: timeout")
-//	}
-//	return nil
-//}
-
-func (srv *Server) Broadcast() {
-	srv.mDns.udpBroadcast(12345)
-}
-
-//func (srv *Server) sendMessage(peer *Peer, message string) {
-//	if conn, ok := srv.conns[peer.UUID]; ok {
-//		srv.msgSend <- Message{srv.protoMessageProcessor.encryptSendMessage(message, srv.peerSymkeys[peer.UUID], srv.uuid, []byte(srv.realAddr)), conn.(*net.UDPConn), nil}
-//		log.Printf("sent %s to %s", message, peer.Name)
-//		return
-//	}
-//}
-
-//func (srv *Server) addPeer(addr string) {
-//	srv.peers[addr] = NewPeer(addr)
-//}
-
-func (srv *Server) Stop() {
-	close(srv.stopCh)
-	if srv.conn != nil {
-		srv.conn.Close()
+	prvKey := crypto.GeneratePrivateKey()
+	if err := b.Sign(prvKey); err != nil {
+		panic(err)
 	}
 
-	for _, conn := range srv.conns {
-		if conn != nil {
-			conn.Close()
-		}
-	}
+	return b
 }
 
-func (srv *Server) Self() *Peer {
-	return &Peer{
-		Name:       srv.name,
-		ListenAddr: srv.realAddr,
-		UUID:       srv.uuid,
-	}
-}
+func (srv *Server) processBlock(from net.Addr, b *core.Block) error {
+	//srv.Logger.Log("msg", "received BLOCKS!!!!!!!!", "from", from)
 
-func (srv *Server) processBlock(b *core.Block) error {
 	if err := srv.chain.AddBlock(b); err != nil {
 		return err
 	}
+
 	go srv.broadcastBlock(b)
+
 	return nil
 }
 
-func (srv *Server) sendGetStatusMessage(tr Transport) error {
-	getStatusMsg := new(GetStatusMessage)
-	buf := new(bytes.Buffer)
+func (srv *Server) sendGetStatusMessage(peer *TCPPeer) error {
+	var (
+		getStatusMsg = new(GetStatusMessage)
+		buf          = new(bytes.Buffer)
+	)
 	if err := gob.NewEncoder(buf).Encode(getStatusMsg); err != nil {
 		return err
 	}
 	msg := NewMessage(MessageTypeGetStatus, buf.Bytes())
-	if err := tr.SendMessage(tr.Addr(), msg.Bytes()); err != nil {
-		return err
-	}
-	return nil
+	return peer.SendMessage(msg.Bytes())
 }
 
-func (srv *Server) processGetStatusMessage(from NetAddr, t *GetStatusMessage) error {
+func (srv *Server) processGetStatusMessage(from net.Addr) error {
+	srv.Logger.Log("msg", "received getStatus message", "from", from)
 	statusMessage := &StatusMessage{
 		CurrentHeight: srv.chain.Height(),
 		ID:            srv.ID,
@@ -567,9 +357,98 @@ func (srv *Server) processGetStatusMessage(from NetAddr, t *GetStatusMessage) er
 		return err
 	}
 	msg := NewMessage(MessageTypeStatus, buf.Bytes())
-	return srv.Transport.SendMessage(from, msg.Bytes())
+
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+	peer, ok := srv.peerMap[from]
+	if !ok {
+		return fmt.Errorf("peer %s not known", peer.conn.RemoteAddr())
+	}
+
+	return peer.SendMessage(msg.Bytes())
 }
 
-func (srv *Server) processStatusMessage(from NetAddr, t *StatusMessage) error {
+func (srv *Server) processStatusMessage(from net.Addr, data *StatusMessage) error {
+	srv.Logger.Log("msg", "received STATUS message", "from", from)
+	if data.CurrentHeight <= srv.chain.Height() {
+		srv.Logger.Log("msg", "cannot sync block from peer", "peer", from.String(), "peerHeight", data.CurrentHeight, "ourHeight", srv.chain.Height())
+		return nil
+	}
+
+	go srv.requestBlocksLoop(from)
+
+	return nil
+}
+
+func (srv *Server) processGetBlocksMessage(from net.Addr, data *GetBlocksMessage) error {
+	srv.Logger.Log("msg", "received GETBLOCKS message", "from", from)
+	var (
+		blocks    = []*core.Block{}
+		outHeight = srv.chain.Height()
+	)
+	if data.To == 0 {
+		for i := data.From; i <= outHeight; i++ {
+			block, err := srv.chain.GetBlock(i)
+			if err != nil {
+				return err
+			}
+			blocks = append(blocks, block)
+		}
+	}
+
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+	peer := srv.peerMap[from]
+	blocksMsg := &BlocksMessage{
+		Blocks: blocks,
+	}
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(blocksMsg); err != nil {
+		return err
+	}
+	return peer.SendMessage(NewMessage(MessageTypeBlocks, buf.Bytes()).Bytes())
+}
+
+func (srv *Server) requestBlocksLoop(from net.Addr) error {
+	ticker := time.NewTicker(3 * time.Second)
+
+	for {
+		srv.Logger.Log("msg", "requesting blocks", "from", from)
+
+		getBlockMessage := &GetBlocksMessage{
+			From: srv.chain.Height() + 1,
+			To:   0,
+		}
+		buf := new(bytes.Buffer)
+		if err := gob.NewEncoder(buf).Encode(getBlockMessage); err != nil {
+			return err
+		}
+
+		srv.mu.RLock()
+		peer, ok := srv.peerMap[from]
+		if !ok {
+			return fmt.Errorf("peer %s not known", peer.conn.RemoteAddr())
+		}
+
+		msg := NewMessage(MessageTypeGetBlocks, buf.Bytes())
+		if err := peer.SendMessage(msg.Bytes()); err != nil {
+			srv.Logger.Log("msg", "failed to send get blocks message", "err", err)
+		}
+
+		srv.mu.RUnlock()
+		<-ticker.C
+
+	}
+}
+
+func (srv *Server) processBlocksMessage(from net.Addr, t *BlocksMessage) error {
+	srv.Logger.Log("msg", "received BLOCKS message", "from", from)
+
+	for _, block := range t.Blocks {
+		if err := srv.chain.AddBlock(block); err != nil {
+			srv.Logger.Log("msg", "failed to add block", "err", err)
+			return err
+		}
+	}
 	return nil
 }

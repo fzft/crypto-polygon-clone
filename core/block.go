@@ -46,15 +46,15 @@ func NewBlock(h *Header, txx []*Transaction) *Block {
 
 func NewBlockFromHeader(h *Header, txx []*Transaction) (*Block, error) {
 	dataHash, err := CalculateDataHash(txx)
-	if err!=nil {
+	if err != nil {
 		return nil, err
 	}
 	header := &Header{
-		Version: 1,
-		DataHash: dataHash,
+		Version:       1,
+		DataHash:      dataHash,
 		PrevBlockHash: BlockHasher{}.Hash(h),
-		Timestamp: time.Now().UnixNano(),
-		Height: h.Height + 1,
+		Timestamp:     time.Now().UnixNano(),
+		Height:        h.Height + 1,
 	}
 
 	return NewBlock(header, txx), nil

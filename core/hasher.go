@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"github.com/fzft/crypto-simple-blockchain/types"
-	"math/rand"
 )
 
 type Hasher[T any] interface {
@@ -26,6 +25,6 @@ type TxHasher struct {
 func (TxHasher) Hash(tx *Transaction) types.Hash {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.LittleEndian, tx.Data)
-	binary.Write(buf, binary.LittleEndian, rand.Intn(10000000000))
+	binary.Write(buf, binary.LittleEndian, tx.Nonce)
 	return sha256.Sum256(buf.Bytes())
 }

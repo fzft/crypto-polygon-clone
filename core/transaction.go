@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/fzft/crypto-simple-blockchain/types"
+	"math/rand"
 )
 
 type Transaction struct {
@@ -13,16 +14,15 @@ type Transaction struct {
 	Signature *crypto.Signature
 
 	// cached version
-	hash types.Hash
-
-
+	hash      types.Hash
 	firstSeen int64
-
+	Nonce     int64
 }
 
 func NewTransaction(data []byte) *Transaction {
 	return &Transaction{
-		Data: data,
+		Data:  data,
+		Nonce: rand.Int63n(10000000000),
 	}
 }
 
