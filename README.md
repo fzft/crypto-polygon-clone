@@ -14,6 +14,8 @@ Golang 1.18
  * [API](#api)
  * [Web](#web)
  * [VM](#vm)
+ * [Wallet](#wallet)
+ * NFTMarketplace(coming soon)
 
 ## Installation
 ```azure
