@@ -43,6 +43,10 @@ func (k PublicKey) ToSlice() []byte {
 	return k
 }
 
+func (k PublicKey) String() string {
+	return hex.EncodeToString(k.ToSlice())
+}
+
 func (k PublicKey) Address() types.Address {
 	h := sha256.Sum256(k.ToSlice())
 	return types.NewAddressFromBytes(h[len(h)-20:])

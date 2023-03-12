@@ -1,17 +1,45 @@
 package core
 
 import (
+	"encoding/gob"
 	"fmt"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/fzft/crypto-simple-blockchain/types"
 	"math/rand"
 )
 
-type Transaction struct {
-	Data []byte
+type TxType byte
 
-	PublicKey crypto.PublicKey
+const (
+	TxTypeCollection TxType = iota
+	TxTypeMint
+)
+
+type CollectionTx struct {
+	Fee      int64
+	MetaData []byte
+}
+
+type MintTx struct {
+	Fee             int64
+	NFT             types.Hash
+	Collection      types.Hash
+	MetaData        []byte
+	CollectionOwner crypto.PublicKey
+	Signature       *crypto.Signature
+}
+
+type Transaction struct {
+	Type TxType
+
+	//
+	TxInner any
+	Data    []byte
+
+	From      crypto.PublicKey
 	Signature *crypto.Signature
+	To        crypto.PublicKey
+	Value     uint64
 
 	// cached version
 	hash      types.Hash
@@ -22,7 +50,7 @@ type Transaction struct {
 func NewTransaction(data []byte) *Transaction {
 	return &Transaction{
 		Data:  data,
-		Nonce: rand.Int63n(10000000000),
+		Nonce: rand.Int63n(1000000),
 	}
 }
 
@@ -32,7 +60,7 @@ func (tx *Transaction) Sign(prv crypto.PrivateKey) error {
 		return err
 	}
 
-	tx.PublicKey = prv.PublicKey()
+	tx.From = prv.PublicKey()
 	tx.Signature = sig
 	return nil
 }
@@ -42,7 +70,7 @@ func (tx *Transaction) Verify() error {
 		return fmt.Errorf("no signature")
 	}
 
-	if !tx.Signature.Verify(tx.PublicKey, tx.Data) {
+	if !tx.Signature.Verify(tx.From, tx.Data) {
 		return fmt.Errorf("invalid signature")
 	}
 
@@ -70,4 +98,9 @@ func (tx *Transaction) SetFirstSeen(t int64) {
 
 func (tx *Transaction) FirstSeen() int64 {
 	return tx.firstSeen
+}
+
+func init() {
+	gob.Register(CollectionTx{})
+	gob.Register(MintTx{})
 }

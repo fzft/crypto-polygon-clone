@@ -3,7 +3,7 @@ package core
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
+	"encoding/gob"
 	"github.com/fzft/crypto-simple-blockchain/types"
 )
 
@@ -24,7 +24,8 @@ type TxHasher struct {
 
 func (TxHasher) Hash(tx *Transaction) types.Hash {
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.LittleEndian, tx.Data)
-	binary.Write(buf, binary.LittleEndian, tx.Nonce)
+	if err := gob.NewEncoder(buf).Encode(tx); err != nil {
+		panic(err)
+	}
 	return sha256.Sum256(buf.Bytes())
 }

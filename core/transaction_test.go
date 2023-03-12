@@ -27,7 +27,7 @@ func TestTransactionVerify(t *testing.T) {
 	assert.Nil(t, tx.Verify())
 
 	otherPrvKey := crypto.GeneratePrivateKey()
-	tx.PublicKey = otherPrvKey.PublicKey()
+	tx.From = otherPrvKey.PublicKey()
 
 	assert.NotNil(t, tx.Verify())
 
@@ -51,4 +51,40 @@ func TestNewGobTxDecoder(t *testing.T) {
 	decoder := NewGobTxDecoder(buf)
 	assert.Nil(t, txDecoded.Decode(decoder))
 	assert.Equal(t, tx, txDecoded)
+}
+
+func TestNFTTransaction(t *testing.T) {
+	privKey := crypto.GeneratePrivateKey()
+	collectionTx := CollectionTx{
+		Fee:      200,
+		MetaData: []byte("the beginning of a new collection"),
+	}
+
+	tx := &Transaction{
+		Type:    TxTypeCollection,
+		TxInner: collectionTx,
+	}
+
+	tx.Sign(privKey)
+
+	buf := new(bytes.Buffer)
+	assert.Nil(t, tx.Encode(NewGobTxEncoder(buf)))
+
+	txDecoded := new(Transaction)
+	decoder := NewGobTxDecoder(buf)
+	assert.Nil(t, txDecoded.Decode(decoder))
+	assert.Equal(t, tx, txDecoded)
+}
+
+func TestNativeTransferTransaction(t *testing.T) {
+	fromPrvKey := crypto.GeneratePrivateKey()
+	toPrvKey := crypto.GeneratePrivateKey()
+
+	tx := &Transaction{
+		To:    toPrvKey.PublicKey(),
+		Value: 100,
+	}
+
+	assert.Nil(t, tx.Sign(fromPrvKey))
+
 }

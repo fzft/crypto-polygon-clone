@@ -241,7 +241,7 @@ func (srv *Server) broadcast(msg []byte) error {
 func (srv *Server) processTransaction(tx *core.Transaction) error {
 	hash := tx.Hash(core.TxHasher{})
 	if srv.memPool.Contains(hash) {
-		return fmt.Errorf("transaction already exists in mempool: %s", hash)
+		return nil
 	}
 	if err := tx.Verify(); err != nil {
 		return err
@@ -413,7 +413,7 @@ func (srv *Server) requestBlocksLoop(from net.Addr) error {
 	ticker := time.NewTicker(3 * time.Second)
 
 	for {
-		srv.Logger.Log("msg", "requesting blocks", "from", from)
+		//srv.Logger.Log("msg", "requesting blocks", "from", from)
 
 		getBlockMessage := &GetBlocksMessage{
 			From: srv.chain.Height() + 1,

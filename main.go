@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/fzft/crypto-simple-blockchain/core"
 	"github.com/fzft/crypto-simple-blockchain/crypto"
 	"github.com/fzft/crypto-simple-blockchain/p2p"
-	"net"
+	"github.com/fzft/crypto-simple-blockchain/types"
+	"github.com/fzft/crypto-simple-blockchain/util"
+	"net/http"
 	"time"
 )
 
@@ -28,21 +31,124 @@ func main() {
 		go lateNode.Start()
 	}()
 
-	//go tcpTester()
+	time.Sleep(time.Second * 1)
+
+	if err := sendTransaction(); err != nil {
+		panic(err)
+	}
+
+	//txSendTicker := time.NewTicker(500 * time.Microsecond)
+	//collectionOwnerPrvKey := crypto.GeneratePrivateKey()
+	//
+	//// 1. Create a collection
+	//collectionHash := createCollectionTx(collectionOwnerPrvKey)
+	//go func() {
+	//	for i := 0; i < 1; i++ {
+	//		nftMinter(collectionOwnerPrvKey, collectionHash)
+	//		<-txSendTicker.C
+	//	}
+	//}()
+
 	select {}
 }
 
-func tcpTester() {
-	conn, err := net.Dial("tcp", ":3000")
-	if err != nil {
-		log.Error(err.Error())
-		return
+func sendTransaction() error {
+	prvKey := crypto.GeneratePrivateKey()
+	toPrvKey := crypto.GeneratePrivateKey()
+	tx := core.NewTransaction(nil)
+	tx.To = toPrvKey.PublicKey()
+	tx.Value = 100
+	if err := tx.Sign(prvKey); err != nil {
+		return err
 	}
 
-	tx, _ := sendTransaction()
-	_, err = conn.Write(tx)
+	tx.Sign(crypto.GeneratePrivateKey())
+
+	buf := &bytes.Buffer{}
+	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
+		panic(err)
+	}
+
+	req, err := http.NewRequest("POST", "http://localhost:9090/tx", buf)
 	if err != nil {
-		log.Error(err.Error())
+		panic(err)
+	}
+
+	client := &http.Client{}
+	_, err = client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+
+	return nil
+}
+
+func createCollectionTx(prvKey crypto.PrivateKey) types.Hash {
+	tx := core.NewTransaction(nil)
+	tx.TxInner = core.CollectionTx{
+		Fee:      100,
+		MetaData: []byte("My first NFT"),
+	}
+
+	tx.Sign(prvKey)
+
+	buf := &bytes.Buffer{}
+	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
+		panic(err)
+	}
+
+	req, err := http.NewRequest("POST", "http://localhost:9090/tx", buf)
+	if err != nil {
+		panic(err)
+	}
+
+	client := &http.Client{}
+	_, err = client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+
+	return tx.Hash(core.TxHasher{})
+}
+
+func nftMinter(prvKey crypto.PrivateKey, collection types.Hash) {
+	metaData := map[string]any{
+		"Name":   "My first NFT",
+		"color":  "red",
+		"random": "random",
+		"health": 100,
+	}
+
+	metaBuf := new(bytes.Buffer)
+	if err := json.NewEncoder(metaBuf).Encode(metaData); err != nil {
+		panic(err)
+	}
+
+	tx := core.NewTransaction(nil)
+	tx.TxInner = core.MintTx{
+		Fee:             100,
+		MetaData:        metaBuf.Bytes(),
+		Collection:      collection,
+		CollectionOwner: prvKey.PublicKey(),
+		NFT:             util.RandomHash(),
+	}
+
+	tx.Sign(prvKey)
+
+	buf := &bytes.Buffer{}
+	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
+		panic(err)
+	}
+
+	req, err := http.NewRequest("POST", "http://localhost:9090/tx", buf)
+	if err != nil {
+		panic(err)
+	}
+
+	client := &http.Client{}
+	_, err = client.Do(req)
+	if err != nil {
+		panic(err)
 	}
 
 }
@@ -62,19 +168,6 @@ func makeServer(id string, listenAddr string, pk *crypto.PrivateKey, seedNodes [
 		return nil
 	}
 	return s
-}
-
-func sendTransaction() ([]byte, error) {
-	prvKey := crypto.GeneratePrivateKey()
-	data := contract()
-	tx := core.NewTransaction(data)
-	tx.Sign(prvKey)
-	buf := &bytes.Buffer{}
-	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
-		return nil, err
-	}
-	msg := p2p.NewMessage(p2p.MessageTypeTx, buf.Bytes())
-	return msg.Bytes(), nil
 }
 
 func contract() []byte {

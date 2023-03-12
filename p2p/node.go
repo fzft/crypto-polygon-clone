@@ -1,4 +1,5 @@
 package p2p
+
 //
 //import (
 //	"crypto/ecdsa"
@@ -265,7 +266,7 @@ package p2p
 ////	if msg.Src != nil {
 ////		address = crypto.PubkeyToAddress(*msg.Src)
 ////	}
-////	if whisper.IsPubKeyEqual(msg.Src, &n.aSymKey.PublicKey) {
+////	if whisper.IsPubKeyEqual(msg.Src, &n.aSymKey.From) {
 ////		fmt.Printf("\n%s <mine>: %s\n", timestamp, text) // message from myself
 ////	} else {
 ////		fmt.Printf("\n%s [%x]: %s\n", timestamp, address, text) // message from a peer
